@@ -7,16 +7,17 @@
 #include "stm32f4xx_ll_system.h"
 #include "stm32f4xx_ll_utils.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
-
 #define SSD1306_I2C_ADDR 0x78
 
-// Single Buffer allocation
-static uint8_t SSD1306_Buffer[SSD1306_BUFFER_SIZE];
+// Double Buffer allocation
+static uint8_t oled_buffer_1[SSD1306_BUFFER_SIZE];
+static uint8_t oled_buffer_2[SSD1306_BUFFER_SIZE];
+
+uint8_t *oled_front_buffer = oled_buffer_1;
+uint8_t *oled_back_buffer  = oled_buffer_2;
+
 static volatile uint8_t oled_dma_busy = 0;
-static volatile TaskHandle_t oled_task_handle = NULL;
-static volatile uint8_t dma_done = 0;
+static volatile uint8_t current_page = 0;
 
 static void I2C_Bus_Recovery(void)
 {
@@ -163,6 +164,67 @@ static uint8_t SSD1306_WriteCommand(uint8_t cmd)
     return 1;
 }
 
+static void SSD1306_ClearDisplayRAM(void)
+{
+    uint32_t timeout;
+    for (uint8_t page = 0; page < 8; page++)
+    {
+        // Set page address (0xB0 + page)
+        SSD1306_WriteCommand(0xB0 + page);
+        // Set column address to 0
+        SSD1306_WriteCommand(0x00);
+        SSD1306_WriteCommand(0x10);
+
+        // Start I2C Start condition
+        LL_I2C_GenerateStartCondition(I2C1);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
+        if (timeout == 0) continue;
+
+        // Send slave address
+        LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout)
+        {
+            if (LL_I2C_IsActiveFlag_AF(I2C1))
+            {
+                LL_I2C_ClearFlag_AF(I2C1);
+                LL_I2C_GenerateStopCondition(I2C1);
+                break;
+            }
+        }
+        if (timeout == 0) continue;
+        LL_I2C_ClearFlag_ADDR(I2C1);
+
+        // Send control byte (0x40 for data stream)
+        LL_I2C_TransmitData8(I2C1, 0x40);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
+            LL_I2C_GenerateStopCondition(I2C1);
+            continue;
+        }
+
+        // Transmit 132 bytes of 0x00 to clear the entire row
+        for (uint8_t col = 0; col < 132; col++)
+        {
+            LL_I2C_TransmitData8(I2C1, 0x00);
+            timeout = 10000;
+            while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        }
+
+        // Wait for last byte to transmit and generate STOP
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
+        LL_I2C_GenerateStopCondition(I2C1);
+
+        // Wait for bus to be free
+        timeout = 100000;
+        while (LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+    }
+}
+
 uint8_t SSD1306_Init(void)
 {
     SSD1306_I2C_Init();
@@ -200,8 +262,12 @@ uint8_t SSD1306_Init(void)
     SSD1306_WriteCommand(0x14); 
     SSD1306_WriteCommand(0xAF); // turn on panel
 
+    // Clear the entire 132-column RAM of the display to prevent power-on garbage in unused regions
+    SSD1306_ClearDisplayRAM();
+
     SSD1306_Clear();
     SSD1306_UpdateScreen();
+    while (SSD1306_IsBusy()) {}
 
     return 1;
 }
@@ -210,217 +276,190 @@ void SSD1306_Clear(void)
 {
     for (uint16_t i = 0; i < SSD1306_BUFFER_SIZE; i++)
     {
-        SSD1306_Buffer[i] = 0x00;
+        oled_back_buffer[i] = 0x00;
     }
+}
+
+static void SSD1306_StartPageTransfer(uint8_t page)
+{
+    uint32_t timeout;
+
+    // 1. Wait until I2C is not busy
+    timeout = 100000;
+    while (LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+    if (timeout == 0)
+    {
+        oled_dma_busy = 0;
+        return;
+    }
+
+    // 2. Start I2C Command phase: Set page and column address (start at column 2)
+    LL_I2C_GenerateStartCondition(I2C1);
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
+    if (timeout == 0)
+    {
+        oled_dma_busy = 0;
+        return;
+    }
+
+    LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout)
+    {
+        if (LL_I2C_IsActiveFlag_AF(I2C1))
+        {
+            LL_I2C_ClearFlag_AF(I2C1);
+            LL_I2C_GenerateStopCondition(I2C1);
+            oled_dma_busy = 0;
+            return;
+        }
+    }
+    if (timeout == 0)
+    {
+        oled_dma_busy = 0;
+        return;
+    }
+    LL_I2C_ClearFlag_ADDR(I2C1);
+
+    // Control byte: Command Stream (0x00)
+    LL_I2C_TransmitData8(I2C1, 0x00);
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+    if (timeout == 0)
+    {
+        LL_I2C_GenerateStopCondition(I2C1);
+        oled_dma_busy = 0;
+        return;
+    }
+
+    // Set Page Address (0xB0 + page)
+    LL_I2C_TransmitData8(I2C1, 0xB0 + page);
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+    if (timeout == 0)
+    {
+        LL_I2C_GenerateStopCondition(I2C1);
+        oled_dma_busy = 0;
+        return;
+    }
+
+    // Set Column Low Address to 2 (0x02) for SH1106
+    LL_I2C_TransmitData8(I2C1, 0x02);
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+    if (timeout == 0)
+    {
+        LL_I2C_GenerateStopCondition(I2C1);
+        oled_dma_busy = 0;
+        return;
+    }
+
+    // Set Column High Address to 0 (0x10)
+    LL_I2C_TransmitData8(I2C1, 0x10);
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+    if (timeout == 0)
+    {
+        LL_I2C_GenerateStopCondition(I2C1);
+        oled_dma_busy = 0;
+        return;
+    }
+
+    // Wait for Byte Transfer Finished to ensure command bytes are sent
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
+    
+    // Generate STOP condition
+    LL_I2C_GenerateStopCondition(I2C1);
+
+    // Wait for I2C to be not busy
+    timeout = 100000;
+    while (LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+
+    // 3. Start I2C Data phase: Send data header (0x40) only
+    LL_I2C_GenerateStartCondition(I2C1);
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
+    if (timeout == 0)
+    {
+        oled_dma_busy = 0;
+        return;
+    }
+
+    LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout)
+    {
+        if (LL_I2C_IsActiveFlag_AF(I2C1))
+        {
+            LL_I2C_ClearFlag_AF(I2C1);
+            LL_I2C_GenerateStopCondition(I2C1);
+            oled_dma_busy = 0;
+            return;
+        }
+    }
+    if (timeout == 0)
+    {
+        oled_dma_busy = 0;
+        return;
+    }
+    LL_I2C_ClearFlag_ADDR(I2C1);
+
+    // Control byte: Data Stream (0x40)
+    LL_I2C_TransmitData8(I2C1, 0x40);
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+    if (timeout == 0)
+    {
+        LL_I2C_GenerateStopCondition(I2C1);
+        oled_dma_busy = 0;
+        return;
+    }
+
+    // Wait for I2C DR to be empty before activating DMA
+    timeout = 10000;
+    while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+    if (timeout == 0)
+    {
+        LL_I2C_GenerateStopCondition(I2C1);
+        oled_dma_busy = 0;
+        return;
+    }
+
+    // 4. Configure and Enable DMA Transfer for 128 bytes of page data
+    LL_DMA_ClearFlag_TC7(DMA1);
+    LL_DMA_ClearFlag_TE7(DMA1);
+
+    LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_7, (uint32_t)&oled_front_buffer[page * 128]);
+    LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_7, 128);
+
+    // Enable I2C DMA request and enable DMA Stream
+    LL_I2C_EnableDMAReq_TX(I2C1);
+    LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_7);
 }
 
 void SSD1306_UpdateScreen(void)
 {
-    if (oled_dma_busy)
+    uint32_t timeout = 100000;
+
+    // Wait if previous DMA transfer is still busy
+    while (oled_dma_busy && --timeout) {}
+    if (timeout == 0)
     {
-        return;
+        oled_dma_busy = 0; // Force clear if hung
     }
+
+    // Swap pointers
+    uint8_t *temp = oled_front_buffer;
+    oled_front_buffer = oled_back_buffer;
+    oled_back_buffer = temp;
 
     oled_dma_busy = 1;
+    current_page = 0;
 
-    // Get the current task handle so the ISR can notify us upon completion
-    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
-    {
-        oled_task_handle = xTaskGetCurrentTaskHandle();
-    }
-    else
-    {
-        oled_task_handle = NULL;
-    }
-
-    for (uint8_t m = 0; m < 8; m++)
-    {
-        uint32_t timeout;
-
-        // 1. Wait until I2C is not busy
-        timeout = 100000;
-        while (LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
-        if (timeout == 0)
-        {
-            oled_dma_busy = 0;
-            return;
-        }
-
-        // 2. Start I2C Command phase: Set page and column address (start at column 2)
-        LL_I2C_GenerateStartCondition(I2C1);
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
-        if (timeout == 0)
-        {
-            oled_dma_busy = 0;
-            return;
-        }
-
-        LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout)
-        {
-            if (LL_I2C_IsActiveFlag_AF(I2C1))
-            {
-                LL_I2C_ClearFlag_AF(I2C1);
-                LL_I2C_GenerateStopCondition(I2C1);
-                oled_dma_busy = 0;
-                return;
-            }
-        }
-        if (timeout == 0)
-        {
-            oled_dma_busy = 0;
-            return;
-        }
-        LL_I2C_ClearFlag_ADDR(I2C1);
-
-        // Control byte: Command Stream (0x00)
-        LL_I2C_TransmitData8(I2C1, 0x00);
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
-        if (timeout == 0)
-        {
-            LL_I2C_GenerateStopCondition(I2C1);
-            oled_dma_busy = 0;
-            return;
-        }
-
-        // Set Page Address (0xB0 + m)
-        LL_I2C_TransmitData8(I2C1, 0xB0 + m);
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
-        if (timeout == 0)
-        {
-            LL_I2C_GenerateStopCondition(I2C1);
-            oled_dma_busy = 0;
-            return;
-        }
-
-        // Set Column Low Address to 2 (0x02) for SH1106
-        LL_I2C_TransmitData8(I2C1, 0x02);
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
-        if (timeout == 0)
-        {
-            LL_I2C_GenerateStopCondition(I2C1);
-            oled_dma_busy = 0;
-            return;
-        }
-
-        // Set Column High Address to 0 (0x10)
-        LL_I2C_TransmitData8(I2C1, 0x10);
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
-        if (timeout == 0)
-        {
-            LL_I2C_GenerateStopCondition(I2C1);
-            oled_dma_busy = 0;
-            return;
-        }
-
-        // Wait for Byte Transfer Finished to ensure command bytes are sent
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
-        
-        // Generate STOP condition
-        LL_I2C_GenerateStopCondition(I2C1);
-
-        // Wait for I2C to be not busy
-        timeout = 100000;
-        while (LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
-
-        // 3. Start I2C Data phase: Send data header (0x40) only
-        LL_I2C_GenerateStartCondition(I2C1);
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
-        if (timeout == 0)
-        {
-            oled_dma_busy = 0;
-            return;
-        }
-
-        LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout)
-        {
-            if (LL_I2C_IsActiveFlag_AF(I2C1))
-            {
-                LL_I2C_ClearFlag_AF(I2C1);
-                LL_I2C_GenerateStopCondition(I2C1);
-                oled_dma_busy = 0;
-                return;
-            }
-        }
-        if (timeout == 0)
-        {
-            oled_dma_busy = 0;
-            return;
-        }
-        LL_I2C_ClearFlag_ADDR(I2C1);
-
-        // Control byte: Data Stream (0x40)
-        LL_I2C_TransmitData8(I2C1, 0x40);
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
-        if (timeout == 0)
-        {
-            LL_I2C_GenerateStopCondition(I2C1);
-            oled_dma_busy = 0;
-            return;
-        }
-
-        // Wait for I2C DR to be empty before activating DMA
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
-        if (timeout == 0)
-        {
-            LL_I2C_GenerateStopCondition(I2C1);
-            oled_dma_busy = 0;
-            return;
-        }
-
-        // Reset DMA done flag
-        dma_done = 0;
-
-        // 4. Configure and Enable DMA Transfer for 128 bytes of page data
-        LL_DMA_ClearFlag_TC7(DMA1);
-        LL_DMA_ClearFlag_TE7(DMA1);
-
-        LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_7, (uint32_t)&SSD1306_Buffer[m * 128]);
-        LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_7, 128);
-
-        // Enable I2C DMA request and enable DMA Stream
-        LL_I2C_EnableDMAReq_TX(I2C1);
-        LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_7);
-
-        // 5. Block task until DMA Transfer Complete
-        if (oled_task_handle != NULL)
-        {
-            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        }
-        else
-        {
-            // If scheduler is not running yet (e.g. during SSD1306_Init in main()), poll the dma_done flag
-            uint32_t dma_timeout = 1000000;
-            while (!dma_done && --dma_timeout) {}
-        }
-
-        // 6. Finalize this page transaction: Wait for BTF and generate STOP
-        timeout = 10000;
-        while (!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
-        LL_I2C_GenerateStopCondition(I2C1);
-
-        // Disable DMA requests and stream AFTER the transmission completes and STOP is generated
-        LL_I2C_DisableDMAReq_TX(I2C1);
-        LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_7);
-
-        // Wait for the stop condition to complete and bus to clear
-        timeout = 100000;
-        while (LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
-    }
-
-    oled_dma_busy = 0;
+    // Start transfer of page 0
+    SSD1306_StartPageTransfer(0);
 }
 
 void SSD1306_DrawPixel(int16_t x, int16_t y, uint8_t color)
@@ -434,11 +473,11 @@ void SSD1306_DrawPixel(int16_t x, int16_t y, uint8_t color)
 
     if (color == SSD1306_COLOR_WHITE)
     {
-        SSD1306_Buffer[index] |= (1 << (y % 8));
+        oled_back_buffer[index] |= (1 << (y % 8));
     }
     else
     {
-        SSD1306_Buffer[index] &= ~(1 << (y % 8));
+        oled_back_buffer[index] &= ~(1 << (y % 8));
     }
 }
 
@@ -490,14 +529,34 @@ void DMA1_Stream7_IRQHandler(void)
     if (LL_DMA_IsActiveFlag_TC7(DMA1))
     {
         LL_DMA_ClearFlag_TC7(DMA1);
-        dma_done = 1;
 
-        // Notify task if scheduler is running and task handle is valid
-        if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING && oled_task_handle != NULL)
+        // 1. Wait for I2C last byte transfer to finish physically on the bus
+        uint32_t timeout = 20000;
+        while (!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout)
         {
-            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-            vTaskNotifyGiveFromISR(oled_task_handle, &xHigherPriorityTaskWoken);
-            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+            if (LL_I2C_IsActiveFlag_AF(I2C1))
+            {
+                LL_I2C_ClearFlag_AF(I2C1);
+                break;
+            }
+        }
+
+        // 2. Generate STOP Condition
+        LL_I2C_GenerateStopCondition(I2C1);
+
+        // 3. Disable DMA requests and stream
+        LL_I2C_DisableDMAReq_TX(I2C1);
+        LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_7);
+
+        // 4. Cascade to next page
+        current_page++;
+        if (current_page < 8)
+        {
+            SSD1306_StartPageTransfer(current_page);
+        }
+        else
+        {
+            oled_dma_busy = 0; // All pages sent, swap now safe
         }
     }
 }

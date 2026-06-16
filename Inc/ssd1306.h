@@ -27,4 +27,8 @@ void SSD1306_DrawChar(int16_t x, int16_t y, char ch, const FontDef *font, uint8_
 void SSD1306_DrawString(int16_t x, int16_t y, const char *str, const FontDef *font, uint8_t color);
 uint8_t SSD1306_IsBusy(void);
 
+// Pointers to the front and back buffers for Double Buffering
+extern uint8_t *oled_front_buffer;
+extern uint8_t *oled_back_buffer;
+
 #endif /* __SSD1306_H__ */
