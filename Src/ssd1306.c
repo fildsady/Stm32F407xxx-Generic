@@ -1,25 +1,136 @@
 #include "ssd1306.h"
+#include "font.h"
 #include "stm32f4xx_ll_i2c.h"
-#include "stm32f4xx_ll_dma.h"
 #include "stm32f4xx_ll_gpio.h"
 #include "stm32f4xx_ll_bus.h"
 #include "stm32f4xx_ll_rcc.h"
 #include "stm32f4xx_ll_system.h"
 #include "stm32f4xx_ll_utils.h"
 
-#define SSD1306_I2C_ADDR 0x78
+static uint8_t SSD1306_Buffer[SSD1306_WIDTH * SSD1306_HEIGHT / 8];
 
-// Double Buffer allocation
-static uint8_t oled_buffer_1[SSD1306_BUFFER_SIZE];
-static uint8_t oled_buffer_2[SSD1306_BUFFER_SIZE];
+static void ssd1306_I2C_Write(uint8_t reg, uint8_t data) {
+    uint32_t timeout = 100000;
+    
+    // Wait for bus to not be busy
+    while(LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+    
+    LL_I2C_GenerateStartCondition(I2C1);
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
+    if(timeout == 0) return;
+    
+    LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout) {
+        if(LL_I2C_IsActiveFlag_AF(I2C1)) {
+            LL_I2C_ClearFlag_AF(I2C1);
+            LL_I2C_GenerateStopCondition(I2C1);
+            return;
+        }
+    }
+    if(timeout == 0) {
+        LL_I2C_GenerateStopCondition(I2C1);
+        return;
+    }
+    LL_I2C_ClearFlag_ADDR(I2C1);
+    
+    LL_I2C_TransmitData8(I2C1, reg);
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {
+        if(LL_I2C_IsActiveFlag_AF(I2C1)) {
+            LL_I2C_ClearFlag_AF(I2C1);
+            LL_I2C_GenerateStopCondition(I2C1);
+            return;
+        }
+    }
+    if(timeout == 0) {
+        LL_I2C_GenerateStopCondition(I2C1);
+        return;
+    }
+    
+    LL_I2C_TransmitData8(I2C1, data);
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {
+        if(LL_I2C_IsActiveFlag_AF(I2C1)) {
+            LL_I2C_ClearFlag_AF(I2C1);
+            LL_I2C_GenerateStopCondition(I2C1);
+            return;
+        }
+    }
+    if(timeout == 0) {
+        LL_I2C_GenerateStopCondition(I2C1);
+        return;
+    }
+    
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
+    LL_I2C_GenerateStopCondition(I2C1);
+}
 
-uint8_t *oled_front_buffer = oled_buffer_1;
-uint8_t *oled_back_buffer  = oled_buffer_2;
+#if !OLED_IS_SH1106
+static void ssd1306_I2C_WriteMulti(uint8_t reg, uint8_t* data, uint16_t count) {
+    uint32_t timeout = 100000;
+    
+    while(LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+    
+    LL_I2C_GenerateStartCondition(I2C1);
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
+    if(timeout == 0) return;
+    
+    LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout) {
+        if(LL_I2C_IsActiveFlag_AF(I2C1)) {
+            LL_I2C_ClearFlag_AF(I2C1);
+            LL_I2C_GenerateStopCondition(I2C1);
+            return;
+        }
+    }
+    if(timeout == 0) {
+        LL_I2C_GenerateStopCondition(I2C1);
+        return;
+    }
+    LL_I2C_ClearFlag_ADDR(I2C1);
+    
+    LL_I2C_TransmitData8(I2C1, reg);
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {
+        if(LL_I2C_IsActiveFlag_AF(I2C1)) {
+            LL_I2C_ClearFlag_AF(I2C1);
+            LL_I2C_GenerateStopCondition(I2C1);
+            return;
+        }
+    }
+    if(timeout == 0) {
+        LL_I2C_GenerateStopCondition(I2C1);
+        return;
+    }
+    
+    for(uint16_t i=0; i<count; i++) {
+        LL_I2C_TransmitData8(I2C1, data[i]);
+        timeout = 100000;
+        while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {
+            if(LL_I2C_IsActiveFlag_AF(I2C1)) {
+                LL_I2C_ClearFlag_AF(I2C1);
+                LL_I2C_GenerateStopCondition(I2C1);
+                return;
+            }
+        }
+        if(timeout == 0) {
+            LL_I2C_GenerateStopCondition(I2C1);
+            return;
+        }
+    }
+    
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
+    LL_I2C_GenerateStopCondition(I2C1);
+}
+#endif
 
-static volatile uint8_t oled_dma_busy = 0;
-
-static void I2C_Bus_Recovery(void)
-{
+static void I2C_Bus_Recovery(void) {
     LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOB);
     
     LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_6, LL_GPIO_MODE_OUTPUT);
@@ -36,10 +147,8 @@ static void I2C_Bus_Recovery(void)
     LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_7);
     LL_mDelay(1);
     
-    for (int i = 0; i < 9; i++)
-    {
-        if (LL_GPIO_IsInputPinSet(GPIOB, LL_GPIO_PIN_7))
-        {
+    for (int i = 0; i < 9; i++) {
+        if (LL_GPIO_IsInputPinSet(GPIOB, LL_GPIO_PIN_7)) {
             break; 
         }
         
@@ -59,8 +168,7 @@ static void I2C_Bus_Recovery(void)
     LL_mDelay(1);
 }
 
-static void SSD1306_I2C_Init(void)
-{
+static void SSD1306_I2C_Init(void) {
     I2C_Bus_Recovery();
 
     LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_6, LL_GPIO_MODE_ALTERNATE);
@@ -84,7 +192,7 @@ static void SSD1306_I2C_Init(void)
     
     LL_I2C_InitTypeDef I2C_InitStruct = {0};
     I2C_InitStruct.PeripheralMode = LL_I2C_MODE_I2C;
-    I2C_InitStruct.ClockSpeed = 400000; // Restored to 400kHz for smooth 30 FPS updates
+    I2C_InitStruct.ClockSpeed = 100000;
     I2C_InitStruct.DutyCycle = LL_I2C_DUTYCYCLE_2;
     I2C_InitStruct.OwnAddress1 = 0;
     I2C_InitStruct.TypeAcknowledge = LL_I2C_ACK;
@@ -95,278 +203,228 @@ static void SSD1306_I2C_Init(void)
     LL_I2C_Enable(I2C1);
 }
 
-static void SSD1306_DMA_Init(void)
-{
-    LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMA1);
-
-    LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_7);
-    
-    LL_DMA_ConfigTransfer(DMA1, LL_DMA_STREAM_7, 
-        LL_DMA_DIRECTION_MEMORY_TO_PERIPH |
-        LL_DMA_PRIORITY_HIGH |
-        LL_DMA_MODE_NORMAL |
-        LL_DMA_MDATAALIGN_BYTE |
-        LL_DMA_PDATAALIGN_BYTE |
-        LL_DMA_MEMORY_INCREMENT |
-        LL_DMA_PERIPH_NOINCREMENT
-    );
-    
-    LL_DMA_SetChannelSelection(DMA1, LL_DMA_STREAM_7, LL_DMA_CHANNEL_1);
-    LL_DMA_SetPeriphAddress(DMA1, LL_DMA_STREAM_7, (uint32_t)&I2C1->DR);
-
-    LL_DMA_EnableIT_TC(DMA1, LL_DMA_STREAM_7);
-
-    NVIC_SetPriority(DMA1_Stream7_IRQn, 6);
-    NVIC_EnableIRQ(DMA1_Stream7_IRQn);
-}
-
-static uint8_t SSD1306_WriteCommand(uint8_t cmd)
-{
-    uint32_t timeout;
-
-    // 1. Generate Start
-    LL_I2C_GenerateStartCondition(I2C1);
-    timeout = 10000;
-    while(!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
-    if (timeout == 0) return 0;
-
-    // 2. Send slave address (Write)
-    LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
-    timeout = 10000;
-    while(!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout) {
-        if (LL_I2C_IsActiveFlag_AF(I2C1)) {
-            LL_I2C_ClearFlag_AF(I2C1);
-            LL_I2C_GenerateStopCondition(I2C1);
-            return 0;
-        }
-    }
-    if (timeout == 0) return 0;
-    LL_I2C_ClearFlag_ADDR(I2C1);
-
-    // 3. Send Control Byte (0x00 for command)
-    LL_I2C_TransmitData8(I2C1, 0x00);
-    timeout = 10000;
-    while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
-    if (timeout == 0) return 0;
-
-    // 4. Send Command Byte
-    LL_I2C_TransmitData8(I2C1, cmd);
-    timeout = 10000;
-    while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
-    if (timeout == 0) return 0;
-
-    // 5. Generate Stop
-    timeout = 10000;
-    while(!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
-    LL_I2C_GenerateStopCondition(I2C1);
-    
-    return 1;
-}
-
-uint8_t SSD1306_Init(void)
-{
+uint8_t SSD1306_Init(void) {
     SSD1306_I2C_Init();
-    SSD1306_DMA_Init();
 
+    // Give some time
     LL_mDelay(150);
 
-    // SSD1306 Startup Sequence
-    SSD1306_WriteCommand(0xAE); // Display Off
-    SSD1306_WriteCommand(0xD5); // Set Display Clock Divide Ratio
-    SSD1306_WriteCommand(0x80);
-    SSD1306_WriteCommand(0xA8); // Set Multiplex Ratio
-    SSD1306_WriteCommand(0x3F);
-    SSD1306_WriteCommand(0xD3); // Set Display Offset
-    SSD1306_WriteCommand(0x00);
-    SSD1306_WriteCommand(0x40); // Set Display Start Line
-    SSD1306_WriteCommand(0x8D); // Charge Pump
-    SSD1306_WriteCommand(0x14); // Enable Charge Pump
-    SSD1306_WriteCommand(0x20); // Set Memory Addressing Mode
-    SSD1306_WriteCommand(0x00); // Horizontal Addressing Mode
-    SSD1306_WriteCommand(0xA1); // Set Segment Re-map
-    SSD1306_WriteCommand(0xC8); // Set COM Output Scan Direction
-    SSD1306_WriteCommand(0xDA); // Set COM Pins Hardware Config
-    SSD1306_WriteCommand(0x12);
-    SSD1306_WriteCommand(0x81); // Contrast Control
-    SSD1306_WriteCommand(0xCF);
-    SSD1306_WriteCommand(0xD9); // Set Pre-charge Period
-    SSD1306_WriteCommand(0xF1);
-    SSD1306_WriteCommand(0xDB); // Set VCOMH Deselect Level
-    SSD1306_WriteCommand(0x40);
-    SSD1306_WriteCommand(0xA4); // Entire Display On Resume
-    SSD1306_WriteCommand(0xA6); // Set Normal Display
-    SSD1306_WriteCommand(0xAF); // Display On
-
-    oled_buffer_1[0] = 0x40;
-    oled_buffer_2[0] = 0x40;
+    // Init Sequence (from known good HAL polling config)
+    ssd1306_I2C_Write(0x00, 0xAE); // display off
+    ssd1306_I2C_Write(0x00, 0x20); // Set Memory Addressing Mode   
+    ssd1306_I2C_Write(0x00, 0x10); // Page Addressing Mode
+    ssd1306_I2C_Write(0x00, 0xB0); // Set Page Start Address
+    ssd1306_I2C_Write(0x00, 0xC8); // Set COM Output Scan Direction
+    ssd1306_I2C_Write(0x00, 0x00); // set low column address
+    ssd1306_I2C_Write(0x00, 0x10); // set high column address
+    ssd1306_I2C_Write(0x00, 0x40); // set start line address
+    ssd1306_I2C_Write(0x00, 0x81); // set contrast control register
+    ssd1306_I2C_Write(0x00, 0xFF);
+    ssd1306_I2C_Write(0x00, 0xA1); // set segment re-map
+    ssd1306_I2C_Write(0x00, 0xA6); // set normal display
+    ssd1306_I2C_Write(0x00, 0xA8); // set multiplex ratio
+    ssd1306_I2C_Write(0x00, 0x3F); // multiplex ratio value
+    ssd1306_I2C_Write(0x00, 0xA4); // output follows RAM content
+    ssd1306_I2C_Write(0x00, 0xD3); // set display offset
+    ssd1306_I2C_Write(0x00, 0x00); // not offset
+    ssd1306_I2C_Write(0x00, 0xD5); // set display clock divide ratio
+    ssd1306_I2C_Write(0x00, 0xF0); // set divide ratio
+    ssd1306_I2C_Write(0x00, 0xD9); // set pre-charge period
+    ssd1306_I2C_Write(0x00, 0x22); 
+    ssd1306_I2C_Write(0x00, 0xDA); // set com pins hardware configuration
+    ssd1306_I2C_Write(0x00, 0x12);
+    ssd1306_I2C_Write(0x00, 0xDB); // set vcomh
+    ssd1306_I2C_Write(0x00, 0x20); // 0.77xVcc
+    ssd1306_I2C_Write(0x00, 0x8D); // set DC-DC enable
+    ssd1306_I2C_Write(0x00, 0x14); 
+    ssd1306_I2C_Write(0x00, 0xAF); // turn on SSD1306 panel
 
     SSD1306_Clear();
-    uint8_t *temp = oled_front_buffer;
-    oled_front_buffer = oled_back_buffer;
-    oled_back_buffer = temp;
-    SSD1306_Clear();
+    SSD1306_UpdateScreen();
 
     return 1;
 }
 
-void SSD1306_Clear(void)
-{
-    for (uint16_t i = 1; i < SSD1306_BUFFER_SIZE; i++)
-    {
-        oled_back_buffer[i] = 0x00;
-    }
-}
-
-void SSD1306_UpdateScreen(void)
-{
-    uint32_t timeout;
-
-    // Wait if DMA is busy
-    timeout = 100000;
-    while (oled_dma_busy && --timeout) {}
-    if (timeout == 0) {
-        oled_dma_busy = 0; // Force clear if hung
-    }
-
-    // Swap pointers
-    uint8_t *temp = oled_front_buffer;
-    oled_front_buffer = oled_back_buffer;
-    oled_back_buffer = temp;
-
-    oled_dma_busy = 1;
-
-    // 1. Reset pointers to (0,0)
-    SSD1306_WriteCommand(0x21); 
-    SSD1306_WriteCommand(0);    
-    SSD1306_WriteCommand(127);  
-    SSD1306_WriteCommand(0x22); 
-    SSD1306_WriteCommand(0);    
-    SSD1306_WriteCommand(7);    
-
-    // 2. Clear DMA flags
-    LL_DMA_ClearFlag_TC7(DMA1);
-    LL_DMA_ClearFlag_TE7(DMA1);
-
-    // 3. Set DMA parameters (do NOT enable stream yet to prevent premature data writing)
-    LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_7, (uint32_t)oled_front_buffer);
-    LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_7, SSD1306_BUFFER_SIZE);
-
-    // 4. Generate START and send address
+static void ssd1306_I2C_WritePageSH1106(uint8_t *data) {
+    uint32_t timeout = 100000;
+    
+    while(LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+    
     LL_I2C_GenerateStartCondition(I2C1);
-    timeout = 10000;
+    timeout = 100000;
     while(!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
-    if (timeout == 0) {
-        oled_dma_busy = 0;
-        return;
-    }
-
+    if(timeout == 0) return;
+    
     LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
-    timeout = 10000;
+    timeout = 100000;
     while(!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout) {
-        if (LL_I2C_IsActiveFlag_AF(I2C1)) {
+        if(LL_I2C_IsActiveFlag_AF(I2C1)) {
             LL_I2C_ClearFlag_AF(I2C1);
             LL_I2C_GenerateStopCondition(I2C1);
-            oled_dma_busy = 0;
             return;
         }
     }
-    if (timeout == 0) {
-        oled_dma_busy = 0;
+    if(timeout == 0) {
+        LL_I2C_GenerateStopCondition(I2C1);
+        return;
+    }
+    LL_I2C_ClearFlag_ADDR(I2C1);
+    
+    LL_I2C_TransmitData8(I2C1, 0x40); // Control byte for data
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {
+        if(LL_I2C_IsActiveFlag_AF(I2C1)) {
+            LL_I2C_ClearFlag_AF(I2C1);
+            LL_I2C_GenerateStopCondition(I2C1);
+            return;
+        }
+    }
+    if(timeout == 0) {
+        LL_I2C_GenerateStopCondition(I2C1);
         return;
     }
     
-    // 5. Clear ADDR flag
-    LL_I2C_ClearFlag_ADDR(I2C1);
-
-    // 6. Enable I2C DMA request and then enable DMA Stream
-    LL_I2C_EnableDMAReq_TX(I2C1);
-    LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_7);
+    // Send 4 bytes of 0x00 for column 0, 1, 2, and 3 (offset of 4)
+    for (int i = 0; i < 4; i++) {
+        LL_I2C_TransmitData8(I2C1, 0x00);
+        timeout = 100000;
+        while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {
+            if(LL_I2C_IsActiveFlag_AF(I2C1)) {
+                LL_I2C_ClearFlag_AF(I2C1);
+                LL_I2C_GenerateStopCondition(I2C1);
+                return;
+            }
+        }
+        if(timeout == 0) {
+            LL_I2C_GenerateStopCondition(I2C1);
+            return;
+        }
+    }
+    
+    // Send 128 bytes of screen data (columns 4 to 131)
+    for (uint16_t i = 0; i < SSD1306_WIDTH; i++) {
+        LL_I2C_TransmitData8(I2C1, data[i]);
+        timeout = 100000;
+        while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {
+            if(LL_I2C_IsActiveFlag_AF(I2C1)) {
+                LL_I2C_ClearFlag_AF(I2C1);
+                LL_I2C_GenerateStopCondition(I2C1);
+                return;
+            }
+        }
+        if(timeout == 0) {
+            LL_I2C_GenerateStopCondition(I2C1);
+            return;
+        }
+    }
+    
+    timeout = 100000;
+    while(!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
+    LL_I2C_GenerateStopCondition(I2C1);
 }
 
-void SSD1306_DrawPixel(int16_t x, int16_t y, uint8_t color)
-{
-    if (x < 0 || x >= SSD1306_WIDTH || y < 0 || y >= SSD1306_HEIGHT)
-    {
+void SSD1306_UpdateScreen(void) {
+    for (uint8_t m = 0; m < 8; m++) {
+        // Send page and column address commands in one I2C transaction
+        uint32_t timeout = 100000;
+        while(LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+        
+        LL_I2C_GenerateStartCondition(I2C1);
+        timeout = 100000;
+        while(!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
+        if(timeout == 0) continue;
+        
+        LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
+        timeout = 100000;
+        while(!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout) {
+            if(LL_I2C_IsActiveFlag_AF(I2C1)) {
+                LL_I2C_ClearFlag_AF(I2C1);
+                LL_I2C_GenerateStopCondition(I2C1);
+                break;
+            }
+        }
+        if(timeout == 0) {
+            LL_I2C_GenerateStopCondition(I2C1);
+            continue;
+        }
+        LL_I2C_ClearFlag_ADDR(I2C1);
+        
+        LL_I2C_TransmitData8(I2C1, 0x00); // Control byte for command stream
+        timeout = 100000;
+        while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        
+        LL_I2C_TransmitData8(I2C1, 0xB0 + m); // Set Page Address
+        timeout = 100000;
+        while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        
+        LL_I2C_TransmitData8(I2C1, 0x00); // Set Column Low Address to 0
+        timeout = 100000;
+        while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        
+        LL_I2C_TransmitData8(I2C1, 0x10); // Set Column High Address to 0
+        timeout = 100000;
+        while(!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        
+        timeout = 100000;
+        while(!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
+        LL_I2C_GenerateStopCondition(I2C1);
+        
+        // Write the data page
+#if OLED_IS_SH1106
+        ssd1306_I2C_WritePageSH1106(&SSD1306_Buffer[SSD1306_WIDTH * m]);
+#else
+        ssd1306_I2C_WriteMulti(0x40, &SSD1306_Buffer[SSD1306_WIDTH * m], SSD1306_WIDTH);
+#endif
+    }
+}
+
+void SSD1306_Clear(void) {
+    for (uint16_t i = 0; i < sizeof(SSD1306_Buffer); i++) {
+        SSD1306_Buffer[i] = 0x00;
+    }
+}
+
+void SSD1306_DrawPixel(int16_t x, int16_t y, uint8_t color) {
+    if (x < 0 || x >= SSD1306_WIDTH || y < 0 || y >= SSD1306_HEIGHT) {
         return;
     }
 
-    uint16_t index = 1 + x + ((y / 8) * SSD1306_WIDTH);
-
-    if (color == SSD1306_COLOR_WHITE)
-    {
-        oled_back_buffer[index] |= (1 << (y % 8));
-    }
-    else
-    {
-        oled_back_buffer[index] &= ~(1 << (y % 8));
+    if (color == SSD1306_COLOR_WHITE) {
+        SSD1306_Buffer[x + (y / 8) * SSD1306_WIDTH] |= (1 << (y % 8));
+    } else {
+        SSD1306_Buffer[x + (y / 8) * SSD1306_WIDTH] &= ~(1 << (y % 8));
     }
 }
 
-void SSD1306_DrawChar(int16_t x, int16_t y, char ch, const FontDef *font, uint8_t color)
-{
-    if (ch < 32 || ch > 126)
-    {
+void SSD1306_DrawChar(int16_t x, int16_t y, char ch, const FontDef *font, uint8_t color) {
+    if (ch < 32 || ch > 126) {
         return;
     }
 
     uint16_t char_index = ch - 32;
 
-    for (uint8_t col = 0; col < font->width - 1; col++)
-    {
+    for (uint8_t col = 0; col < font->width - 1; col++) {
         uint8_t line = font->data[char_index * (font->width - 1) + col];
         
-        for (uint8_t row = 0; row < font->height; row++)
-        {
-            if (line & (1 << row))
-            {
+        for (uint8_t row = 0; row < font->height; row++) {
+            if (line & (1 << row)) {
                 SSD1306_DrawPixel(x + col, y + row, color);
-            }
-            else
-            {
+            } else {
                 SSD1306_DrawPixel(x + col, y + row, !color);
             }
         }
     }
 }
 
-void SSD1306_DrawString(int16_t x, int16_t y, const char *str, const FontDef *font, uint8_t color)
-{
-    while (*str)
-    {
+void SSD1306_DrawString(int16_t x, int16_t y, const char *str, const FontDef *font, uint8_t color) {
+    while (*str) {
         SSD1306_DrawChar(x, y, *str, font, color);
         x += font->width;
         str++;
     }
 }
 
-uint8_t SSD1306_IsBusy(void)
-{
-    return oled_dma_busy;
-}
-
-// DMA1 Stream 7 ISR Handler
-void DMA1_Stream7_IRQHandler(void)
-{
-    if (LL_DMA_IsActiveFlag_TC7(DMA1))
-    {
-        LL_DMA_ClearFlag_TC7(DMA1);
-
-        // Wait for I2C last byte with timeout and AF check to prevent lockups
-        uint32_t timeout = 20000;
-        while (!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {
-            if (LL_I2C_IsActiveFlag_AF(I2C1)) {
-                LL_I2C_ClearFlag_AF(I2C1);
-                break;
-            }
-        }
-
-        // Generate Stop Condition
-        LL_I2C_GenerateStopCondition(I2C1);
-
-        // Disable DMA requests and stream
-        LL_I2C_DisableDMAReq_TX(I2C1);
-        LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_7);
-
-        oled_dma_busy = 0; 
-    }
+uint8_t SSD1306_IsBusy(void) {
+    // Since this is polling mode, it's never "busy" in background
+    return 0;
 }

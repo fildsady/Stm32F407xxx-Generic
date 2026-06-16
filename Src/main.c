@@ -134,16 +134,18 @@ static void oled_ui_task(void *args)
             }
         }
         
-        // Draw divider line (column 88)
+        // Commented out the vertical divider line (column 88) to remove it from the display
+        /*
         for (uint8_t y_line = 0; y_line < 64; y_line++) {
             SSD1306_DrawPixel(88, y_line, SSD1306_COLOR_WHITE);
         }
+        */
         
         // 4. Update screen (swaps buffers and starts DMA transfer in background)
         SSD1306_UpdateScreen();
         
-        // 5. Sleep for ~33ms (targeting 30 FPS)
-        vTaskDelay(pdMS_TO_TICKS(33));
+        // 5. Sleep for ~100ms (targeting 10 FPS)
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
