@@ -247,15 +247,11 @@ void SSD1306_UpdateScreen(void)
     LL_DMA_ClearFlag_TC7(DMA1);
     LL_DMA_ClearFlag_TE7(DMA1);
 
-    // 3. Set DMA parameters
+    // 3. Set DMA parameters (do NOT enable stream yet to prevent premature data writing)
     LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_7, (uint32_t)oled_front_buffer);
     LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_7, SSD1306_BUFFER_SIZE);
 
-    // 4. Enable DMA Stream
-    LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_7);
-
-    // 5. Generate START and send address
-    LL_I2C_EnableDMAReq_TX(I2C1);
+    // 4. Generate START and send address
     LL_I2C_GenerateStartCondition(I2C1);
     timeout = 10000;
     while(!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
@@ -278,7 +274,13 @@ void SSD1306_UpdateScreen(void)
         oled_dma_busy = 0;
         return;
     }
+    
+    // 5. Clear ADDR flag
     LL_I2C_ClearFlag_ADDR(I2C1);
+
+    // 6. Enable I2C DMA request and then enable DMA Stream
+    LL_I2C_EnableDMAReq_TX(I2C1);
+    LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_7);
 }
 
 void SSD1306_DrawPixel(int16_t x, int16_t y, uint8_t color)
