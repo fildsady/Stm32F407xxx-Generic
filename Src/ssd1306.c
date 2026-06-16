@@ -7,16 +7,16 @@
 #include "stm32f4xx_ll_system.h"
 #include "stm32f4xx_ll_utils.h"
 
+#include "FreeRTOS.h"
+#include "task.h"
+
 #define SSD1306_I2C_ADDR 0x78
 
-// Double Buffer allocation
-static uint8_t oled_buffer_1[SSD1306_BUFFER_SIZE];
-static uint8_t oled_buffer_2[SSD1306_BUFFER_SIZE];
-
-uint8_t *oled_front_buffer = oled_buffer_1;
-uint8_t *oled_back_buffer  = oled_buffer_2;
-
+// Single Buffer allocation
+static uint8_t SSD1306_Buffer[SSD1306_BUFFER_SIZE];
 static volatile uint8_t oled_dma_busy = 0;
+static volatile TaskHandle_t oled_task_handle = NULL;
+static volatile uint8_t dma_done = 0;
 
 static void I2C_Bus_Recovery(void)
 {
@@ -84,7 +84,7 @@ static void SSD1306_I2C_Init(void)
     
     LL_I2C_InitTypeDef I2C_InitStruct = {0};
     I2C_InitStruct.PeripheralMode = LL_I2C_MODE_I2C;
-    I2C_InitStruct.ClockSpeed = 400000; // Restored to 400kHz for smooth 30 FPS updates
+    I2C_InitStruct.ClockSpeed = 400000; // 400kHz Fast Mode for smoother and faster UI updates
     I2C_InitStruct.DutyCycle = LL_I2C_DUTYCYCLE_2;
     I2C_InitStruct.OwnAddress1 = 0;
     I2C_InitStruct.TypeAcknowledge = LL_I2C_ACK;
@@ -170,117 +170,257 @@ uint8_t SSD1306_Init(void)
 
     LL_mDelay(150);
 
-    // SSD1306 Startup Sequence
-    SSD1306_WriteCommand(0xAE); // Display Off
-    SSD1306_WriteCommand(0xD5); // Set Display Clock Divide Ratio
-    SSD1306_WriteCommand(0x80);
-    SSD1306_WriteCommand(0xA8); // Set Multiplex Ratio
-    SSD1306_WriteCommand(0x3F);
-    SSD1306_WriteCommand(0xD3); // Set Display Offset
-    SSD1306_WriteCommand(0x00);
-    SSD1306_WriteCommand(0x40); // Set Display Start Line
-    SSD1306_WriteCommand(0x8D); // Charge Pump
-    SSD1306_WriteCommand(0x14); // Enable Charge Pump
-    SSD1306_WriteCommand(0x20); // Set Memory Addressing Mode
-    SSD1306_WriteCommand(0x00); // Horizontal Addressing Mode
-    SSD1306_WriteCommand(0xA1); // Set Segment Re-map
+    // SH1106 Startup Sequence (Page Addressing Mode)
+    SSD1306_WriteCommand(0xAE); // display off
+    SSD1306_WriteCommand(0x20); // Set Memory Addressing Mode   
+    SSD1306_WriteCommand(0x10); // Page Addressing Mode
+    SSD1306_WriteCommand(0xB0); // Set Page Start Address
     SSD1306_WriteCommand(0xC8); // Set COM Output Scan Direction
-    SSD1306_WriteCommand(0xDA); // Set COM Pins Hardware Config
+    SSD1306_WriteCommand(0x00); // set low column address
+    SSD1306_WriteCommand(0x10); // set high column address
+    SSD1306_WriteCommand(0x40); // set start line address
+    SSD1306_WriteCommand(0x81); // set contrast control register
+    SSD1306_WriteCommand(0xFF);
+    SSD1306_WriteCommand(0xA1); // set segment re-map
+    SSD1306_WriteCommand(0xA6); // set normal display
+    SSD1306_WriteCommand(0xA8); // set multiplex ratio
+    SSD1306_WriteCommand(0x3F); // multiplex ratio value
+    SSD1306_WriteCommand(0xA4); // output follows RAM content
+    SSD1306_WriteCommand(0xD3); // set display offset
+    SSD1306_WriteCommand(0x00); // not offset
+    SSD1306_WriteCommand(0xD5); // set display clock divide ratio
+    SSD1306_WriteCommand(0xF0); // set divide ratio
+    SSD1306_WriteCommand(0xD9); // set pre-charge period
+    SSD1306_WriteCommand(0x22); 
+    SSD1306_WriteCommand(0xDA); // set com pins hardware configuration
     SSD1306_WriteCommand(0x12);
-    SSD1306_WriteCommand(0x81); // Contrast Control
-    SSD1306_WriteCommand(0xCF);
-    SSD1306_WriteCommand(0xD9); // Set Pre-charge Period
-    SSD1306_WriteCommand(0xF1);
-    SSD1306_WriteCommand(0xDB); // Set VCOMH Deselect Level
-    SSD1306_WriteCommand(0x40);
-    SSD1306_WriteCommand(0xA4); // Entire Display On Resume
-    SSD1306_WriteCommand(0xA6); // Set Normal Display
-    SSD1306_WriteCommand(0xAF); // Display On
-
-    oled_buffer_1[0] = 0x40;
-    oled_buffer_2[0] = 0x40;
+    SSD1306_WriteCommand(0xDB); // set vcomh
+    SSD1306_WriteCommand(0x20); // 0.77xVcc
+    SSD1306_WriteCommand(0x8D); // set DC-DC enable
+    SSD1306_WriteCommand(0x14); 
+    SSD1306_WriteCommand(0xAF); // turn on panel
 
     SSD1306_Clear();
-    uint8_t *temp = oled_front_buffer;
-    oled_front_buffer = oled_back_buffer;
-    oled_back_buffer = temp;
-    SSD1306_Clear();
+    SSD1306_UpdateScreen();
 
     return 1;
 }
 
 void SSD1306_Clear(void)
 {
-    for (uint16_t i = 1; i < SSD1306_BUFFER_SIZE; i++)
+    for (uint16_t i = 0; i < SSD1306_BUFFER_SIZE; i++)
     {
-        oled_back_buffer[i] = 0x00;
+        SSD1306_Buffer[i] = 0x00;
     }
 }
 
 void SSD1306_UpdateScreen(void)
 {
-    uint32_t timeout;
-
-    // Wait if DMA is busy
-    timeout = 100000;
-    while (oled_dma_busy && --timeout) {}
-    if (timeout == 0) {
-        oled_dma_busy = 0; // Force clear if hung
-    }
-
-    // Swap pointers
-    uint8_t *temp = oled_front_buffer;
-    oled_front_buffer = oled_back_buffer;
-    oled_back_buffer = temp;
-
-    oled_dma_busy = 1;
-
-    // 1. Reset pointers to (0,0)
-    SSD1306_WriteCommand(0x21); 
-    SSD1306_WriteCommand(0);    
-    SSD1306_WriteCommand(127);  
-    SSD1306_WriteCommand(0x22); 
-    SSD1306_WriteCommand(0);    
-    SSD1306_WriteCommand(7);    
-
-    // 2. Clear DMA flags
-    LL_DMA_ClearFlag_TC7(DMA1);
-    LL_DMA_ClearFlag_TE7(DMA1);
-
-    // 3. Set DMA parameters (do NOT enable stream yet to prevent premature data writing)
-    LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_7, (uint32_t)oled_front_buffer);
-    LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_7, SSD1306_BUFFER_SIZE);
-
-    // 4. Generate START and send address
-    LL_I2C_GenerateStartCondition(I2C1);
-    timeout = 10000;
-    while(!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
-    if (timeout == 0) {
-        oled_dma_busy = 0;
+    if (oled_dma_busy)
+    {
         return;
     }
 
-    LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
-    timeout = 10000;
-    while(!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout) {
-        if (LL_I2C_IsActiveFlag_AF(I2C1)) {
-            LL_I2C_ClearFlag_AF(I2C1);
+    oled_dma_busy = 1;
+
+    // Get the current task handle so the ISR can notify us upon completion
+    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
+    {
+        oled_task_handle = xTaskGetCurrentTaskHandle();
+    }
+    else
+    {
+        oled_task_handle = NULL;
+    }
+
+    for (uint8_t m = 0; m < 8; m++)
+    {
+        uint32_t timeout;
+
+        // 1. Wait until I2C is not busy
+        timeout = 100000;
+        while (LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
+            oled_dma_busy = 0;
+            return;
+        }
+
+        // 2. Start I2C Command phase: Set page and column address (start at column 2)
+        LL_I2C_GenerateStartCondition(I2C1);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
+            oled_dma_busy = 0;
+            return;
+        }
+
+        LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout)
+        {
+            if (LL_I2C_IsActiveFlag_AF(I2C1))
+            {
+                LL_I2C_ClearFlag_AF(I2C1);
+                LL_I2C_GenerateStopCondition(I2C1);
+                oled_dma_busy = 0;
+                return;
+            }
+        }
+        if (timeout == 0)
+        {
+            oled_dma_busy = 0;
+            return;
+        }
+        LL_I2C_ClearFlag_ADDR(I2C1);
+
+        // Control byte: Command Stream (0x00)
+        LL_I2C_TransmitData8(I2C1, 0x00);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
             LL_I2C_GenerateStopCondition(I2C1);
             oled_dma_busy = 0;
             return;
         }
-    }
-    if (timeout == 0) {
-        oled_dma_busy = 0;
-        return;
-    }
-    
-    // 5. Clear ADDR flag
-    LL_I2C_ClearFlag_ADDR(I2C1);
 
-    // 6. Enable I2C DMA request and then enable DMA Stream
-    LL_I2C_EnableDMAReq_TX(I2C1);
-    LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_7);
+        // Set Page Address (0xB0 + m)
+        LL_I2C_TransmitData8(I2C1, 0xB0 + m);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
+            LL_I2C_GenerateStopCondition(I2C1);
+            oled_dma_busy = 0;
+            return;
+        }
+
+        // Set Column Low Address to 2 (0x02) for SH1106
+        LL_I2C_TransmitData8(I2C1, 0x02);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
+            LL_I2C_GenerateStopCondition(I2C1);
+            oled_dma_busy = 0;
+            return;
+        }
+
+        // Set Column High Address to 0 (0x10)
+        LL_I2C_TransmitData8(I2C1, 0x10);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
+            LL_I2C_GenerateStopCondition(I2C1);
+            oled_dma_busy = 0;
+            return;
+        }
+
+        // Wait for Byte Transfer Finished to ensure command bytes are sent
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
+        
+        // Generate STOP condition
+        LL_I2C_GenerateStopCondition(I2C1);
+
+        // Wait for I2C to be not busy
+        timeout = 100000;
+        while (LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+
+        // 3. Start I2C Data phase: Send data header (0x40) only
+        LL_I2C_GenerateStartCondition(I2C1);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
+            oled_dma_busy = 0;
+            return;
+        }
+
+        LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout)
+        {
+            if (LL_I2C_IsActiveFlag_AF(I2C1))
+            {
+                LL_I2C_ClearFlag_AF(I2C1);
+                LL_I2C_GenerateStopCondition(I2C1);
+                oled_dma_busy = 0;
+                return;
+            }
+        }
+        if (timeout == 0)
+        {
+            oled_dma_busy = 0;
+            return;
+        }
+        LL_I2C_ClearFlag_ADDR(I2C1);
+
+        // Control byte: Data Stream (0x40)
+        LL_I2C_TransmitData8(I2C1, 0x40);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
+            LL_I2C_GenerateStopCondition(I2C1);
+            oled_dma_busy = 0;
+            return;
+        }
+
+        // Wait for I2C DR to be empty before activating DMA
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
+            LL_I2C_GenerateStopCondition(I2C1);
+            oled_dma_busy = 0;
+            return;
+        }
+
+        // Reset DMA done flag
+        dma_done = 0;
+
+        // 4. Configure and Enable DMA Transfer for 128 bytes of page data
+        LL_DMA_ClearFlag_TC7(DMA1);
+        LL_DMA_ClearFlag_TE7(DMA1);
+
+        LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_7, (uint32_t)&SSD1306_Buffer[m * 128]);
+        LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_7, 128);
+
+        // Enable I2C DMA request and enable DMA Stream
+        LL_I2C_EnableDMAReq_TX(I2C1);
+        LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_7);
+
+        // 5. Block task until DMA Transfer Complete
+        if (oled_task_handle != NULL)
+        {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        }
+        else
+        {
+            // If scheduler is not running yet (e.g. during SSD1306_Init in main()), poll the dma_done flag
+            uint32_t dma_timeout = 1000000;
+            while (!dma_done && --dma_timeout) {}
+        }
+
+        // 6. Finalize this page transaction: Wait for BTF and generate STOP
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
+        LL_I2C_GenerateStopCondition(I2C1);
+
+        // Disable DMA requests and stream AFTER the transmission completes and STOP is generated
+        LL_I2C_DisableDMAReq_TX(I2C1);
+        LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_7);
+
+        // Wait for the stop condition to complete and bus to clear
+        timeout = 100000;
+        while (LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+    }
+
+    oled_dma_busy = 0;
 }
 
 void SSD1306_DrawPixel(int16_t x, int16_t y, uint8_t color)
@@ -290,15 +430,15 @@ void SSD1306_DrawPixel(int16_t x, int16_t y, uint8_t color)
         return;
     }
 
-    uint16_t index = 1 + x + ((y / 8) * SSD1306_WIDTH);
+    uint16_t index = x + ((y / 8) * SSD1306_WIDTH);
 
     if (color == SSD1306_COLOR_WHITE)
     {
-        oled_back_buffer[index] |= (1 << (y % 8));
+        SSD1306_Buffer[index] |= (1 << (y % 8));
     }
     else
     {
-        oled_back_buffer[index] &= ~(1 << (y % 8));
+        SSD1306_Buffer[index] &= ~(1 << (y % 8));
     }
 }
 
@@ -350,23 +490,14 @@ void DMA1_Stream7_IRQHandler(void)
     if (LL_DMA_IsActiveFlag_TC7(DMA1))
     {
         LL_DMA_ClearFlag_TC7(DMA1);
+        dma_done = 1;
 
-        // Wait for I2C last byte with timeout and AF check to prevent lockups
-        uint32_t timeout = 20000;
-        while (!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {
-            if (LL_I2C_IsActiveFlag_AF(I2C1)) {
-                LL_I2C_ClearFlag_AF(I2C1);
-                break;
-            }
+        // Notify task if scheduler is running and task handle is valid
+        if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING && oled_task_handle != NULL)
+        {
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            vTaskNotifyGiveFromISR(oled_task_handle, &xHigherPriorityTaskWoken);
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
         }
-
-        // Generate Stop Condition
-        LL_I2C_GenerateStopCondition(I2C1);
-
-        // Disable DMA requests and stream
-        LL_I2C_DisableDMAReq_TX(I2C1);
-        LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_7);
-
-        oled_dma_busy = 0; 
     }
 }

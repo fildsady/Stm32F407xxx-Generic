@@ -110,7 +110,7 @@ static void oled_ui_task(void *args)
         // Draw frame count
         sprintf(str_buf, "Frames: %lu", frame_count++);
         SSD1306_DrawString(0, 38, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        SSD1306_DrawString(0, 48, "Double Buffer 2K",  &Font_6x8, SSD1306_COLOR_WHITE);
+        SSD1306_DrawString(0, 48, "Single Buffer 1K",  &Font_6x8, SSD1306_COLOR_WHITE);
         
         // 3. Update Bouncing Box physics
         ball_x += ball_dx;
@@ -134,10 +134,12 @@ static void oled_ui_task(void *args)
             }
         }
         
-        // Draw divider line (column 88)
+        // Commented out the vertical divider line (column 88) to remove it from the display
+        /*
         for (uint8_t y_line = 0; y_line < 64; y_line++) {
             SSD1306_DrawPixel(88, y_line, SSD1306_COLOR_WHITE);
         }
+        */
         
         // 4. Update screen (swaps buffers and starts DMA transfer in background)
         SSD1306_UpdateScreen();
