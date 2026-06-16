@@ -84,7 +84,7 @@ static void SSD1306_I2C_Init(void)
     
     LL_I2C_InitTypeDef I2C_InitStruct = {0};
     I2C_InitStruct.PeripheralMode = LL_I2C_MODE_I2C;
-    I2C_InitStruct.ClockSpeed = 200000; // Set to 200kHz for better noise tolerance and rise time stability
+    I2C_InitStruct.ClockSpeed = 400000; // Restored to 400kHz for smooth 30 FPS updates
     I2C_InitStruct.DutyCycle = LL_I2C_DUTYCYCLE_2;
     I2C_InitStruct.OwnAddress1 = 0;
     I2C_InitStruct.TypeAcknowledge = LL_I2C_ACK;
