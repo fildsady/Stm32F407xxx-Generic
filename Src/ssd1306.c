@@ -19,12 +19,63 @@ uint8_t *oled_back_buffer  = oled_buffer_2;
 
 static volatile uint8_t oled_dma_busy = 0;
 
+static void I2C_Bus_Recovery(void)
+{
+    // 1. Enable GPIOB Clock
+    LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOB);
+    
+    // 2. Configure PB6 (SCL) and PB7 (SDA) as Output, Open-Drain, Pull-up temporarily
+    // NOTE: If your hardware uses PB8/PB9 instead of PB6/PB7, change LL_GPIO_PIN_6/7 to LL_GPIO_PIN_8/9 here!
+    LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_6, LL_GPIO_MODE_OUTPUT);
+    LL_GPIO_SetPinOutputType(GPIOB, LL_GPIO_PIN_6, LL_GPIO_OUTPUT_OPENDRAIN);
+    LL_GPIO_SetPinSpeed(GPIOB, LL_GPIO_PIN_6, LL_GPIO_SPEED_FREQ_VERY_HIGH);
+    LL_GPIO_SetPinPull(GPIOB, LL_GPIO_PIN_6, LL_GPIO_PULL_UP);
+
+    LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_7, LL_GPIO_MODE_OUTPUT);
+    LL_GPIO_SetPinOutputType(GPIOB, LL_GPIO_PIN_7, LL_GPIO_OUTPUT_OPENDRAIN);
+    LL_GPIO_SetPinSpeed(GPIOB, LL_GPIO_PIN_7, LL_GPIO_SPEED_FREQ_VERY_HIGH);
+    LL_GPIO_SetPinPull(GPIOB, LL_GPIO_PIN_7, LL_GPIO_PULL_UP);
+    
+    // Set SCL and SDA high
+    LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_6);
+    LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_7);
+    LL_mDelay(1);
+    
+    // Clock SCL 9 times to force slave to release SDA line
+    for (int i = 0; i < 9; i++)
+    {
+        if (LL_GPIO_IsInputPinSet(GPIOB, LL_GPIO_PIN_7))
+        {
+            break; // SDA is high, bus is clear
+        }
+        
+        LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_6);
+        LL_mDelay(1);
+        LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_6);
+        LL_mDelay(1);
+    }
+    
+    // Send manual START and STOP to reset slave state machine
+    LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_7); // SDA Low
+    LL_mDelay(1);
+    LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_6); // SCL Low
+    LL_mDelay(1);
+    LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_6);   // SCL High
+    LL_mDelay(1);
+    LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_7);   // SDA High
+    LL_mDelay(1);
+}
+
 static void SSD1306_I2C_Init(void)
 {
-    // 1. Enable GPIOB clock
-    LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOB);
+    // 1. Perform I2C Bus Recovery (Clears stuck SDA line)
+    I2C_Bus_Recovery();
 
     // 2. Configure PB6 (SCL) and PB7 (SDA) as Alternate Function (AF4), Open-Drain, Pull-up
+    // NOTE: If using PB8/PB9, change to:
+    // LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_8, LL_GPIO_MODE_ALTERNATE);
+    // LL_GPIO_SetAFPin_8_15(GPIOB, LL_GPIO_PIN_8, LL_GPIO_AF_4);
+    // ... and the same for PB9.
     LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_6, LL_GPIO_MODE_ALTERNATE);
     LL_GPIO_SetAFPin_0_7(GPIOB, LL_GPIO_PIN_6, LL_GPIO_AF_4);
     LL_GPIO_SetPinSpeed(GPIOB, LL_GPIO_PIN_6, LL_GPIO_SPEED_FREQ_VERY_HIGH);
@@ -44,12 +95,18 @@ static void SSD1306_I2C_Init(void)
     LL_APB1_GRP1_ForceReset(LL_APB1_GRP1_PERIPH_I2C1);
     LL_APB1_GRP1_ReleaseReset(LL_APB1_GRP1_PERIPH_I2C1);
 
-    // 5. Configure I2C1 (Fast Mode 400kHz, APB1 clock is 42MHz)
+    // 5. Configure I2C1 using standard LL_I2C_Init (automatically sets speed, duty cycle, and TRISE)
     LL_I2C_Disable(I2C1);
     
-    // Set clock speed (400000 Hz, APB1 = 42MHz)
-    // Duty cycle = 2 (standard)
-    LL_I2C_ConfigSpeed(I2C1, 42000000, 400000, LL_I2C_DUTYCYCLE_2);
+    LL_I2C_InitTypeDef I2C_InitStruct = {0};
+    I2C_InitStruct.PeripheralMode = LL_I2C_MODE_I2C;
+    I2C_InitStruct.ClockSpeed = 400000;
+    I2C_InitStruct.DutyCycle = LL_I2C_DUTYCYCLE_2;
+    I2C_InitStruct.OwnAddress1 = 0;
+    I2C_InitStruct.TypeAcknowledge = LL_I2C_ACK;
+    I2C_InitStruct.OwnAddrSize = LL_I2C_OWNADDRESS1_7BIT;
+    
+    LL_I2C_Init(I2C1, &I2C_InitStruct);
     
     LL_I2C_Enable(I2C1);
 }
