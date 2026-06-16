@@ -1,0 +1,41 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build CMake Debug",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "${workspaceFolder}/build/Debug"
+            ],
+            "options": {
+                "env": {
+                    "PATH": "${env:PATH};C:\\ST\\STM32CubeCLT_1.21.0\\GNU-tools-for-STM32\\bin;C:\\ST\\STM32CubeCLT_1.21.0\\CMake\\bin;C:\\ST\\STM32CubeCLT_1.21.0\\Ninja\\bin"
+                }
+            },
+            "group": "build",
+            "problemMatcher": [],
+            "detail": "Builds the active CMake project in Debug mode"
+        },
+        {
+            "label": "Flash to Chip (SWD)",
+            "type": "shell",
+            "command": "C:\\ST\\STM32CubeCLT_1.21.0\\STM32CubeProgrammer\\bin\\STM32_Programmer_CLI.exe",
+            "args": [
+                "-c", "port=SWD",
+                "-w", "${workspaceFolder}/build/Debug/Stm32F407xxx-Generic.elf",
+                "-rst"
+            ],
+            "dependsOn": [
+                "Build CMake Debug"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [],
+            "detail": "Builds the project and then flashes it into the MCU via SWD"
+        }
+    ]
+}
