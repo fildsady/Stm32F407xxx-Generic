@@ -165,7 +165,7 @@ int main(void)
 	xTaskCreate(dsp_test_task, "DSP_Test", configMINIMAL_STACK_SIZE + 128, NULL, 2, NULL);
 
     /* Create OLED UI task */
-    xTaskCreate(oled_ui_task, "OLED_UI", configMINIMAL_STACK_SIZE + 256, NULL, 1, NULL);
+    xTaskCreate(oled_ui_task, "OLED_UI", configMINIMAL_STACK_SIZE + 512, NULL, 1, NULL);
 
 	/* Start FreeRTOS scheduler */
 	vTaskStartScheduler();
