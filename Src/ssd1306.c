@@ -163,6 +163,67 @@ static uint8_t SSD1306_WriteCommand(uint8_t cmd)
     return 1;
 }
 
+static void SSD1306_ClearDisplayRAM(void)
+{
+    uint32_t timeout;
+    for (uint8_t page = 0; page < 8; page++)
+    {
+        // Set page address (0xB0 + page)
+        SSD1306_WriteCommand(0xB0 + page);
+        // Set column address to 0
+        SSD1306_WriteCommand(0x00);
+        SSD1306_WriteCommand(0x10);
+
+        // Start I2C Start condition
+        LL_I2C_GenerateStartCondition(I2C1);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_SB(I2C1) && --timeout) {}
+        if (timeout == 0) continue;
+
+        // Send slave address
+        LL_I2C_TransmitData8(I2C1, SSD1306_I2C_ADDR);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_ADDR(I2C1) && --timeout)
+        {
+            if (LL_I2C_IsActiveFlag_AF(I2C1))
+            {
+                LL_I2C_ClearFlag_AF(I2C1);
+                LL_I2C_GenerateStopCondition(I2C1);
+                break;
+            }
+        }
+        if (timeout == 0) continue;
+        LL_I2C_ClearFlag_ADDR(I2C1);
+
+        // Send control byte (0x40 for data stream)
+        LL_I2C_TransmitData8(I2C1, 0x40);
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        if (timeout == 0)
+        {
+            LL_I2C_GenerateStopCondition(I2C1);
+            continue;
+        }
+
+        // Transmit 132 bytes of 0x00 to clear the entire row
+        for (uint8_t col = 0; col < 132; col++)
+        {
+            LL_I2C_TransmitData8(I2C1, 0x00);
+            timeout = 10000;
+            while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
+        }
+
+        // Wait for last byte to transmit and generate STOP
+        timeout = 10000;
+        while (!LL_I2C_IsActiveFlag_BTF(I2C1) && --timeout) {}
+        LL_I2C_GenerateStopCondition(I2C1);
+
+        // Wait for bus to be free
+        timeout = 100000;
+        while (LL_I2C_IsActiveFlag_BUSY(I2C1) && --timeout) {}
+    }
+}
+
 uint8_t SSD1306_Init(void)
 {
     SSD1306_I2C_Init();
@@ -199,6 +260,9 @@ uint8_t SSD1306_Init(void)
     SSD1306_WriteCommand(0x8D); // set DC-DC enable
     SSD1306_WriteCommand(0x14); 
     SSD1306_WriteCommand(0xAF); // turn on panel
+
+    // Clear the entire 132-column RAM of the display to prevent power-on garbage in unused regions
+    SSD1306_ClearDisplayRAM();
 
     SSD1306_Clear();
     SSD1306_UpdateScreen();
