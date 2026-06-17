@@ -11,6 +11,7 @@ extern "C" {
 uint8_t I2S_Audio_Init(uint32_t sample_rate);
 void I2S_Audio_Start(void);
 void I2S_Audio_Stop(void);
+void I2S_Audio_ResetBuffer(void);
 
 #ifdef __cplusplus
 }

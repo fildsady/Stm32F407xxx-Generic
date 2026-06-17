@@ -15,6 +15,7 @@ static uint16_t i2s_tx_buffer[I2S_TOTAL_BUF_SIZE];
 /* Read pointer for the USB Audio circular buffer */
 #define AUDIO_BUFFER_SIZE   2048
 static volatile uint32_t usb_audio_read_ptr = 0;
+static volatile uint8_t i2s_buffering = 1;
 
 /* Global flag for I2S status */
 static volatile uint8_t i2s_playing = 0;
@@ -138,6 +139,19 @@ void I2S_Audio_Stop(void) {
 /* Local helper function to feed data from USB buffer to I2S buffer */
 static void feed_audio_samples(uint16_t *dest_buffer, uint32_t num_samples) {
   if (usb_audio_streaming) {
+    /* Wait until we have accumulated at least 8ms (768 samples) of audio before starting playback */
+    if (i2s_buffering) {
+      if (usb_audio_rx_count >= 768) {
+        i2s_buffering = 0;
+      } else {
+        /* Output silence while buffering */
+        for (uint32_t i = 0; i < num_samples; i++) {
+          dest_buffer[i] = 0;
+        }
+        return;
+      }
+    }
+
     /* Calculate current available samples in USB buffer */
     uint32_t write_ptr = usb_audio_rx_count % AUDIO_BUFFER_SIZE;
     uint32_t read_ptr = usb_audio_read_ptr;
@@ -186,4 +200,9 @@ void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
     /* Feed the second half of the I2S DMA buffer */
     feed_audio_samples(&i2s_tx_buffer[I2S_HALF_BUF_SIZE], I2S_HALF_BUF_SIZE);
   }
+}
+
+void I2S_Audio_ResetBuffer(void) {
+  usb_audio_read_ptr = 0;
+  i2s_buffering = 1;
 }

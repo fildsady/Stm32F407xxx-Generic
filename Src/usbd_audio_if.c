@@ -1,4 +1,5 @@
 #include "usbd_audio_if.h"
+#include "i2s_audio.h"
 
 /* Global audio state variables */
 volatile uint32_t usb_audio_rx_count = 0;
@@ -36,6 +37,7 @@ static int8_t AUDIO_Init_FS(uint32_t AudioFreq, uint32_t Volume, uint32_t option
   
   usb_audio_rx_count = 0;
   usb_audio_write_ptr = 0;
+  I2S_Audio_ResetBuffer();
   usb_audio_streaming = 1;
   return USBD_OK;
 }
