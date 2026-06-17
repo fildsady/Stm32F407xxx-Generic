@@ -258,12 +258,12 @@ int main(void)
             if (USBD_AUDIO_RegisterInterface(&hUsbDeviceFS, &USBD_AUDIO_fops) == USBD_OK) {
                 USBD_Start(&hUsbDeviceFS);
                 
-                /* Initialize CS43L22 Audio Codec */
-                CS43L22_Init(48000);
-                
-                /* Initialize I2S3 Audio Stream & DMA */
+                /* Initialize I2S3 Audio Stream & DMA first so MCLK is active for the codec */
                 I2S_Audio_Init(48000);
                 I2S_Audio_Start();
+                
+                /* Initialize CS43L22 Audio Codec after clocks are active */
+                CS43L22_Init(48000);
             }
         }
     }

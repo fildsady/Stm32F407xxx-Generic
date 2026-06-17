@@ -195,8 +195,13 @@ void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
   }
 }
 
+#include "stm32f4xx_ll_gpio.h"
+
 void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
   if (hi2s->Instance == SPI3) {
+    /* Toggle Green LED (PD12) to verify DMA interrupts are firing */
+    LL_GPIO_TogglePin(GPIOD, LL_GPIO_PIN_12);
+    
     /* Feed the second half of the I2S DMA buffer */
     feed_audio_samples(&i2s_tx_buffer[I2S_HALF_BUF_SIZE], I2S_HALF_BUF_SIZE);
   }
