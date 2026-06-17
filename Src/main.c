@@ -61,6 +61,10 @@ void GPIO_Init(void)
   LL_GPIO_SetPinPull(GPIOD, LL_GPIO_PIN_12, LL_GPIO_PULL_NO);
 }
 
+/* Global variables to share DSP results with OLED task */
+volatile float32_t dsp_mult_result[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+volatile float32_t dsp_sin_val = 0.0f;
+
 static void dsp_test_task(void *args)
 {
     (void)args;
@@ -73,10 +77,12 @@ static void dsp_test_task(void *args)
     while (1) {
         /* Test Vector Multiplication (utilizes FPU/SIMD) */
         arm_mult_f32(a, b, result, 4);
+        for (int i = 0; i < 4; i++) {
+            dsp_mult_result[i] = result[i];
+        }
 
         /* Test Fast Math Sine (utilizes FPU) */
-        float32_t sin_val = arm_sin_f32(PI/4);
-        (void)sin_val; // suppress unused warning
+        dsp_sin_val = arm_sin_f32(PI/4);
 
         LL_GPIO_TogglePin(GPIOD, LL_GPIO_PIN_12);
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -105,12 +111,20 @@ static void oled_ui_task(void *args)
         // 2. Draw Text Info on Left Side
         SSD1306_DrawString(0, 2,  "STM32F407 PLAYER", &Font_6x8, SSD1306_COLOR_WHITE);
         SSD1306_DrawString(0, 14, "DSP Core: Active",  &Font_6x8, SSD1306_COLOR_WHITE);
-        SSD1306_DrawString(0, 24, "I2C DMA: Running",  &Font_6x8, SSD1306_COLOR_WHITE);
         
-        // Draw frame count
-        sprintf(str_buf, "Frames: %lu", frame_count++);
-        SSD1306_DrawString(0, 38, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        SSD1306_DrawString(0, 48, "Double Buffer 2K",  &Font_6x8, SSD1306_COLOR_WHITE);
+        // Draw DSP calculation values
+        sprintf(str_buf, "sin: %.4f", dsp_sin_val);
+        SSD1306_DrawString(0, 24, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
+        
+        sprintf(str_buf, "R0,1: %.1f,%.1f", dsp_mult_result[0], dsp_mult_result[1]);
+        SSD1306_DrawString(0, 34, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
+        
+        sprintf(str_buf, "R2,3: %.1f,%.1f", dsp_mult_result[2], dsp_mult_result[3]);
+        SSD1306_DrawString(0, 44, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
+        
+        // Draw frame count / mode
+        sprintf(str_buf, "DB 2K  F:%lu", frame_count++);
+        SSD1306_DrawString(0, 54, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
         // 3. Update Bouncing Box physics
         ball_x += ball_dx;

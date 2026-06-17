@@ -164,6 +164,7 @@ target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
     -lsupc++
     -Wl,--end-group
     -Wl,--print-memory-usage
+    -u _printf_float
 )
 
 # Set linker script as a dependency to force re-link if it changes
