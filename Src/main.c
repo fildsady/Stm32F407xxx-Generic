@@ -77,7 +77,7 @@ static void dsp_test_task(void *args)
         (void)sin_val; // suppress unused warning
 
         LL_GPIO_TogglePin(GPIOD, LL_GPIO_PIN_12);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
 }
 
