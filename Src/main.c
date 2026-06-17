@@ -213,7 +213,7 @@ static void oled_ui_task(void *args)
         // 2. Draw Text Info on Left Side
         SSD1306_DrawString(0, 2,  "STM32F407 RTOS", &Font_6x8, SSD1306_COLOR_WHITE);
         
-        sprintf(str_buf, "CPU: %.1f%%", cpu_usage);
+        sprintf(str_buf, "CPU: %.1f%% T:%lu", cpu_usage, (unsigned long)uxTaskGetNumberOfTasks());
         SSD1306_DrawString(0, 12, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
         sprintf(str_buf, "Heap: %lu B", (unsigned long)xPortGetFreeHeapSize());
