@@ -208,14 +208,14 @@ static void oled_ui_task(void *args)
         sprintf(str_buf, "CPU: %.1f%%", cpu_usage);
         SSD1306_DrawString(0, 12, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
-        // Draw DSP calculation values
-        sprintf(str_buf, "sin: %.4f", dsp_sin_val);
+        sprintf(str_buf, "Heap: %lu B", (unsigned long)xPortGetFreeHeapSize());
         SSD1306_DrawString(0, 22, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
-        sprintf(str_buf, "R0,1: %.1f,%.1f", dsp_mult_result[0], dsp_mult_result[1]);
+        // Draw DSP calculation values
+        sprintf(str_buf, "sin: %.4f", dsp_sin_val);
         SSD1306_DrawString(0, 32, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
-        sprintf(str_buf, "R2,3: %.1f,%.1f", dsp_mult_result[2], dsp_mult_result[3]);
+        sprintf(str_buf, "R: %.0f,%.0f,%.0f,%.0f", dsp_mult_result[0], dsp_mult_result[1], dsp_mult_result[2], dsp_mult_result[3]);
         SSD1306_DrawString(0, 42, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
         // Draw frame count / mode
