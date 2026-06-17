@@ -7,6 +7,8 @@
 #include "stm32f4xx_ll_utils.h"
 #include "stm32f4xx_ll_pwr.h"
 #include "stm32f4xx_ll_gpio.h"
+#include "stm32f4xx_ll_tim.h"
+#include <string.h>
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -65,6 +67,72 @@ void GPIO_Init(void)
 volatile float32_t dsp_mult_result[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 volatile float32_t dsp_sin_val = 0.0f;
 
+/* Timer 5 Configuration for FreeRTOS Run-time Stats */
+void Timer_Init(void)
+{
+    // Enable TIM5 clock
+    LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_TIM5);
+    
+    // Configure prescaler: TIM5 input clock is 84MHz on APB1.
+    // To run timer at 20 kHz (resolution of 50us):
+    // Prescaler = 84000000 / 20000 - 1 = 4199
+    LL_TIM_SetPrescaler(TIM5, 4199);
+    
+    // Set auto-reload to max 32-bit value
+    LL_TIM_SetAutoReload(TIM5, 0xFFFFFFFF);
+    
+    // Enable counter
+    LL_TIM_EnableCounter(TIM5);
+}
+
+uint32_t Timer_GetCounter(void)
+{
+    return LL_TIM_GetCounter(TIM5);
+}
+
+/* Calculate FreeRTOS CPU Usage */
+float32_t calculate_cpu_usage(void)
+{
+    static TaskStatus_t pxTaskStatusArray[10];
+    static uint32_t ulTotalRunTimeBefore = 0;
+    static uint32_t ulIdleRunTimeBefore = 0;
+    
+    volatile UBaseType_t uxArraySize;
+    uint32_t ulTotalRunTime = 0;
+    
+    uxArraySize = uxTaskGetNumberOfTasks();
+    if (uxArraySize > 10) {
+        uxArraySize = 10;
+    }
+    
+    uxArraySize = uxTaskGetSystemState(pxTaskStatusArray, uxArraySize, &ulTotalRunTime);
+    
+    uint32_t ulIdleRunTime = 0;
+    for (UBaseType_t i = 0; i < uxArraySize; i++) {
+        if (strcmp(pxTaskStatusArray[i].pcTaskName, "IDLE") == 0) {
+            ulIdleRunTime = pxTaskStatusArray[i].ulRunTimeCounter;
+            break;
+        }
+    }
+    
+    float32_t cpu_usage = 0.0f;
+    if (ulTotalRunTime > ulTotalRunTimeBefore) {
+        uint32_t total_diff = ulTotalRunTime - ulTotalRunTimeBefore;
+        uint32_t idle_diff = ulIdleRunTime - ulIdleRunTimeBefore;
+        if (total_diff > 0) {
+            cpu_usage = 100.0f * (1.0f - ((float32_t)idle_diff / (float32_t)total_diff));
+        }
+    }
+    
+    ulTotalRunTimeBefore = ulTotalRunTime;
+    ulIdleRunTimeBefore = ulIdleRunTime;
+    
+    if (cpu_usage < 0.0f) cpu_usage = 0.0f;
+    if (cpu_usage > 100.0f) cpu_usage = 100.0f;
+    
+    return cpu_usage;
+}
+
 static void dsp_test_task(void *args)
 {
     (void)args;
@@ -102,29 +170,37 @@ static void oled_ui_task(void *args)
     
     uint32_t frame_count = 0;
     char str_buf[32];
+    float32_t cpu_usage = 0.0f;
     
     while (1)
     {
         // 1. Clear Back Buffer
         SSD1306_Clear();
         
+        // Calculate CPU usage every ~1 second (every 30 frames)
+        if (frame_count % 30 == 0) {
+            cpu_usage = calculate_cpu_usage();
+        }
+        
         // 2. Draw Text Info on Left Side
-        SSD1306_DrawString(0, 2,  "STM32F407 PLAYER", &Font_6x8, SSD1306_COLOR_WHITE);
-        SSD1306_DrawString(0, 14, "DSP Core: Active",  &Font_6x8, SSD1306_COLOR_WHITE);
+        SSD1306_DrawString(0, 2,  "STM32F407 RTOS", &Font_6x8, SSD1306_COLOR_WHITE);
+        
+        sprintf(str_buf, "CPU: %.1f%%", cpu_usage);
+        SSD1306_DrawString(0, 12, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
         // Draw DSP calculation values
         sprintf(str_buf, "sin: %.4f", dsp_sin_val);
-        SSD1306_DrawString(0, 24, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
+        SSD1306_DrawString(0, 22, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
         sprintf(str_buf, "R0,1: %.1f,%.1f", dsp_mult_result[0], dsp_mult_result[1]);
-        SSD1306_DrawString(0, 34, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
+        SSD1306_DrawString(0, 32, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
         sprintf(str_buf, "R2,3: %.1f,%.1f", dsp_mult_result[2], dsp_mult_result[3]);
-        SSD1306_DrawString(0, 44, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
+        SSD1306_DrawString(0, 42, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
         // Draw frame count / mode
-        sprintf(str_buf, "DB 2K  F:%lu", frame_count++);
-        SSD1306_DrawString(0, 54, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
+        sprintf(str_buf, "Frames: %lu", frame_count++);
+        SSD1306_DrawString(0, 52, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
         // 3. Update Bouncing Box physics
         ball_x += ball_dx;
