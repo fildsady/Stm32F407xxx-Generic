@@ -361,8 +361,8 @@ void SSD1306_UpdateScreen(void)
             return;
         }
 
-        // Set Column Low Address to 2 (0x02) for SH1106
-        LL_I2C_TransmitData8(I2C1, 0x02);
+        // Set Column Low Address to 0 (0x00) for SSD1306
+        LL_I2C_TransmitData8(I2C1, 0x00);
         timeout = 10000;
         while (!LL_I2C_IsActiveFlag_TXE(I2C1) && --timeout) {}
         if (timeout == 0)
