@@ -17,4 +17,4 @@
 [submodule "Middlewares/ST/STM32_USB_Device_Library"]
 	path = Middlewares/ST/STM32_USB_Device_Library
 	url = https://github.com/STMicroelectronics/stm32-mw-usb-device.git
-	ignore = dirty
+	ignore = all
