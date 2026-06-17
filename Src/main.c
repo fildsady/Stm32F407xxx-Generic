@@ -212,22 +212,22 @@ static void oled_ui_task(void *args)
         
         // 2. Draw Text Info on Left Side
         SSD1306_DrawString(0, 2,  "STM32F407 RTOS", &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        sprintf(str_buf, "CPU: %.1f%% T:%lu", cpu_usage, (unsigned long)uxTaskGetNumberOfTasks());
+
+        snprintf(str_buf, sizeof(str_buf), "CPU: %.1f%% T:%lu", cpu_usage, (unsigned long)uxTaskGetNumberOfTasks());
         SSD1306_DrawString(0, 12, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        sprintf(str_buf, "Heap: %lu B", (unsigned long)xPortGetFreeHeapSize());
+
+        snprintf(str_buf, sizeof(str_buf), "Heap: %lu B", (unsigned long)xPortGetFreeHeapSize());
         SSD1306_DrawString(0, 22, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        // Draw DSP calculation values
-        sprintf(str_buf, "sin: %.4f", dsp_sin_val);
+
+        snprintf(str_buf, sizeof(str_buf), "sin: %.4f", (double)dsp_sin_val);
         SSD1306_DrawString(0, 32, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        sprintf(str_buf, "R: %.0f,%.0f,%.0f,%.0f", dsp_mult_result[0], dsp_mult_result[1], dsp_mult_result[2], dsp_mult_result[3]);
+
+        snprintf(str_buf, sizeof(str_buf), "R: %.0f,%.0f,%.0f,%.0f",
+                 (double)dsp_mult_result[0], (double)dsp_mult_result[1],
+                 (double)dsp_mult_result[2], (double)dsp_mult_result[3]);
         SSD1306_DrawString(0, 42, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        // Draw frame count / mode
-        sprintf(str_buf, "Frames: %lu", frame_count++);
+
+        snprintf(str_buf, sizeof(str_buf), "Frames: %lu", frame_count++);
         SSD1306_DrawString(0, 52, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
         
         // 3. Update Bouncing Box physics
