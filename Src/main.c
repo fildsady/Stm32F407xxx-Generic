@@ -14,8 +14,32 @@
 #include "task.h"
 
 #include "arm_math.h"
-#include "ssd1306.h"
 #include <stdio.h>
+
+/* USB Audio Device headers */
+#include "usbd_core.h"
+#include "usbd_desc.h"
+#include "usbd_audio.h"
+#include "usbd_audio_if.h"
+
+USBD_HandleTypeDef hUsbDeviceFS;
+extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
+
+/* Audio Codec & I2S headers */
+#include "cs43l22.h"
+#include "i2s_audio.h"
+
+extern DMA_HandleTypeDef hdma_spi3_tx;
+
+void DMA1_Stream7_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_spi3_tx);
+}
+
+void OTG_FS_IRQHandler(void)
+{
+  HAL_PCD_IRQHandler(&hpcd_USB_OTG_FS);
+}
 
 void SystemClock_Config(void)
 {
@@ -33,7 +57,8 @@ void SystemClock_Config(void)
   LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_PWR);
   LL_PWR_SetRegulVoltageScaling(LL_PWR_REGU_VOLTAGE_SCALE1);
 
-  /* Configure PLL: HSE(8MHz) / 8 * 336 / 2 = 168MHz */
+  /* Configure PLL: HSE(8MHz) / 8 * 336 / 2 = 168MHz, and PLLQ = 7 for 48MHz USB clock */
+  LL_RCC_PLL_ConfigDomain_48M(LL_RCC_PLLSOURCE_HSE, LL_RCC_PLLM_DIV_8, 336, LL_RCC_PLLQ_DIV_7);
   LL_RCC_PLL_ConfigDomain_SYS(LL_RCC_PLLSOURCE_HSE, LL_RCC_PLLM_DIV_8, 336, LL_RCC_PLLP_DIV_2);
   LL_RCC_PLL_Enable();
   while(LL_RCC_PLL_IsReady() != 1) { }
@@ -180,90 +205,7 @@ static void dsp_test_task(void *args)
         /* Test Fast Math Sine (utilizes FPU) */
         dsp_sin_val = arm_sin_f32(PI/4);
 
-        LL_GPIO_TogglePin(GPIOD, LL_GPIO_PIN_12);
         vTaskDelay(pdMS_TO_TICKS(500));
-    }
-}
-
-static void oled_ui_task(void *args)
-{
-    (void)args;
-    
-    // Bouncing box variables on the right partition of screen
-    int16_t ball_x = 95;
-    int16_t ball_y = 10;
-    int16_t ball_dx = 1;
-    int16_t ball_dy = 1;
-    const uint8_t ball_size = 4;
-    
-    uint32_t frame_count = 0;
-    char str_buf[32];
-    float32_t cpu_usage = 0.0f;
-    
-    while (1)
-    {
-        // 1. Clear Back Buffer
-        SSD1306_Clear();
-        
-        // Calculate CPU usage every ~1 second (every 30 frames)
-        if (frame_count % 30 == 0) {
-            cpu_usage = calculate_cpu_usage();
-        }
-        
-        // 2. Draw Text Info on Left Side
-        SSD1306_DrawString(0, 2,  "STM32F407 RTOS", &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        sprintf(str_buf, "CPU: %.1f%% T:%lu", cpu_usage, (unsigned long)uxTaskGetNumberOfTasks());
-        SSD1306_DrawString(0, 12, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        sprintf(str_buf, "Heap: %lu B", (unsigned long)xPortGetFreeHeapSize());
-        SSD1306_DrawString(0, 22, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        // Draw DSP calculation values
-        sprintf(str_buf, "sin: %.4f", dsp_sin_val);
-        SSD1306_DrawString(0, 32, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        sprintf(str_buf, "R: %.0f,%.0f,%.0f,%.0f", dsp_mult_result[0], dsp_mult_result[1], dsp_mult_result[2], dsp_mult_result[3]);
-        SSD1306_DrawString(0, 42, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        // Draw frame count / mode
-        sprintf(str_buf, "Frames: %lu", frame_count++);
-        SSD1306_DrawString(0, 52, str_buf, &Font_6x8, SSD1306_COLOR_WHITE);
-        
-        // 3. Update Bouncing Box physics
-        ball_x += ball_dx;
-        ball_y += ball_dy;
-        
-        // Check collisions with boundary
-        // Boundaries are: x between 91 and 123 (excluding boundaries and box size), y between 0 and 59
-        if (ball_x <= 91 || ball_x >= (128 - ball_size)) {
-            ball_dx = -ball_dx;
-            ball_x += ball_dx;
-        }
-        if (ball_y <= 0 || ball_y >= (64 - ball_size)) {
-            ball_dy = -ball_dy;
-            ball_y += ball_dy;
-        }
-        
-        // Draw the bouncing box
-        for (uint8_t i = 0; i < ball_size; i++) {
-            for (uint8_t j = 0; j < ball_size; j++) {
-                SSD1306_DrawPixel(ball_x + i, ball_y + j, SSD1306_COLOR_WHITE);
-            }
-        }
-        
-        // Commented out the vertical divider line (column 88) to remove it from the display
-        /*
-        for (uint8_t y_line = 0; y_line < 64; y_line++) {
-            SSD1306_DrawPixel(88, y_line, SSD1306_COLOR_WHITE);
-        }
-        */
-        
-        // 4. Update screen (swaps buffers and starts DMA transfer in background)
-        SSD1306_UpdateScreen();
-        
-        // 5. Sleep for ~33ms (targeting 30 FPS)
-        vTaskDelay(pdMS_TO_TICKS(33));
     }
 }
 
@@ -278,19 +220,29 @@ int main(void)
 	/* Initialize GPIO */
 	GPIO_Init();
 
-    /* Initialize SSD1306 OLED (I2C1 + DMA1 Stream 7) */
-    SSD1306_Init();
+    /* Initialize USB Device Library, register AUDIO class and start the driver */
+    if (USBD_Init(&hUsbDeviceFS, &FS_Desc, 0) == USBD_OK) {
+        if (USBD_RegisterClass(&hUsbDeviceFS, &USBD_AUDIO) == USBD_OK) {
+            if (USBD_AUDIO_RegisterInterface(&hUsbDeviceFS, &USBD_AUDIO_fops) == USBD_OK) {
+                USBD_Start(&hUsbDeviceFS);
+                
+                /* Initialize CS43L22 Audio Codec */
+                CS43L22_Init(48000);
+                
+                /* Initialize I2S3 Audio Stream & DMA */
+                I2S_Audio_Init(48000);
+                I2S_Audio_Start();
+            }
+        }
+    }
 
 #if ENABLE_LOAD_TEST
-    /* Create CPU Load Test task at priority 1 (same as OLED UI to allow time-slicing and screen updates) */
+    /* Create CPU Load Test task at priority 1 */
     xTaskCreate(load_test_task, "Load_Test", configMINIMAL_STACK_SIZE + 128, NULL, 1, NULL);
 #endif
 
 	/* Create DSP test task */
 	xTaskCreate(dsp_test_task, "DSP_Test", configMINIMAL_STACK_SIZE + 128, NULL, 2, NULL);
-
-    /* Create OLED UI task */
-    xTaskCreate(oled_ui_task, "OLED_UI", configMINIMAL_STACK_SIZE + 512, NULL, 1, NULL);
 
 	/* Start FreeRTOS scheduler */
 	vTaskStartScheduler();
