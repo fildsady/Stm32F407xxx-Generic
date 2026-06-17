@@ -143,11 +143,19 @@ static void load_test_task(void *args)
         // Sleep for 2 seconds
         vTaskDelay(pdMS_TO_TICKS(2000));
         
+        // Allocate 20 KB (20480 bytes) from the FreeRTOS Heap
+        void *temp_ptr = pvPortMalloc(20480);
+        
         // Busy loop for 1 second (1000 ms)
         uint32_t start_tick = xTaskGetTickCount();
         while ((xTaskGetTickCount() - start_tick) < pdMS_TO_TICKS(1000)) {
             // Keep CPU busy with a dummy operation
             __asm__ volatile("nop");
+        }
+        
+        // Free the allocated memory
+        if (temp_ptr != NULL) {
+            vPortFree(temp_ptr);
         }
     }
 }
