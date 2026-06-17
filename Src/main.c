@@ -133,6 +133,26 @@ float32_t calculate_cpu_usage(void)
     return cpu_usage;
 }
 
+#define ENABLE_LOAD_TEST 1
+
+#if ENABLE_LOAD_TEST
+static void load_test_task(void *args)
+{
+    (void)args;
+    while (1) {
+        // Sleep for 2 seconds
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        
+        // Busy loop for 1 second (1000 ms)
+        uint32_t start_tick = xTaskGetTickCount();
+        while ((xTaskGetTickCount() - start_tick) < pdMS_TO_TICKS(1000)) {
+            // Keep CPU busy with a dummy operation
+            __asm__ volatile("nop");
+        }
+    }
+}
+#endif
+
 static void dsp_test_task(void *args)
 {
     (void)args;
@@ -252,6 +272,11 @@ int main(void)
 
     /* Initialize SSD1306 OLED (I2C1 + DMA1 Stream 7) */
     SSD1306_Init();
+
+#if ENABLE_LOAD_TEST
+    /* Create CPU Load Test task at priority 1 (same as OLED UI to allow time-slicing and screen updates) */
+    xTaskCreate(load_test_task, "Load_Test", configMINIMAL_STACK_SIZE + 128, NULL, 1, NULL);
+#endif
 
 	/* Create DSP test task */
 	xTaskCreate(dsp_test_task, "DSP_Test", configMINIMAL_STACK_SIZE + 128, NULL, 2, NULL);
