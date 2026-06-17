@@ -6,11 +6,11 @@ I2S_HandleTypeDef hi2s3;
 DMA_HandleTypeDef hdma_spi3_tx;
 
 /* I2S Double Transmit Buffer */
-/* 48kHz Stereo 16-bit: 1ms = 48 samples * 2 channels = 96 half-words */
-/* Double buffer total size = 96 * 2 = 192 half-words */
-#define I2S_HALF_BUF_SIZE   96
-#define I2S_TOTAL_BUF_SIZE  192
-static int16_t i2s_tx_buffer[I2S_TOTAL_BUF_SIZE];
+/* 48kHz Stereo 24-bit in 32-bit frame: 1ms = 48 samples * 2 channels * 2 half-words = 192 half-words */
+/* Double buffer total size = 192 * 2 = 384 half-words */
+#define I2S_HALF_BUF_SIZE   192
+#define I2S_TOTAL_BUF_SIZE  384
+static uint16_t i2s_tx_buffer[I2S_TOTAL_BUF_SIZE];
 
 /* Read pointer for the USB Audio circular buffer */
 #define AUDIO_BUFFER_SIZE   2048
@@ -103,7 +103,7 @@ uint8_t I2S_Audio_Init(uint32_t sample_rate) {
   hi2s3.Instance = SPI3;
   hi2s3.Init.Mode = I2S_MODE_MASTER_TX;
   hi2s3.Init.Standard = I2S_STANDARD_PHILIPS;
-  hi2s3.Init.DataFormat = I2S_DATAFORMAT_16B;
+  hi2s3.Init.DataFormat = I2S_DATAFORMAT_24B;
   hi2s3.Init.MCLKOutput = I2S_MCLKOUTPUT_ENABLE;
   hi2s3.Init.AudioFreq = I2S_AUDIOFREQ_48K;
   hi2s3.Init.CPOL = I2S_CPOL_LOW;
@@ -136,7 +136,7 @@ void I2S_Audio_Stop(void) {
 }
 
 /* Local helper function to feed data from USB buffer to I2S buffer */
-static void feed_audio_samples(int16_t *dest_buffer, uint32_t num_samples) {
+static void feed_audio_samples(uint16_t *dest_buffer, uint32_t num_samples) {
   if (usb_audio_streaming) {
     /* Calculate current available samples in USB buffer */
     uint32_t write_ptr = usb_audio_rx_count % AUDIO_BUFFER_SIZE;
@@ -149,11 +149,15 @@ static void feed_audio_samples(int16_t *dest_buffer, uint32_t num_samples) {
       available = (AUDIO_BUFFER_SIZE - read_ptr) + write_ptr;
     }
 
-    if (available >= num_samples) {
-      /* Copy from USB buffer to I2S DMA buffer */
-      for (uint32_t i = 0; i < num_samples; i++) {
-        dest_buffer[i] = usb_audio_buffer[usb_audio_read_ptr];
+    uint32_t num_audio_samples = num_samples / 2; // Each 32-bit sample occupies 2 half-words in dest_buffer
+    if (available >= num_audio_samples) {
+      /* Copy from USB buffer to I2S DMA buffer, splitting each 32-bit sample into 2 half-words */
+      for (uint32_t i = 0; i < num_audio_samples; i++) {
+        int32_t sample = usb_audio_buffer[usb_audio_read_ptr];
         usb_audio_read_ptr = (usb_audio_read_ptr + 1) % AUDIO_BUFFER_SIZE;
+        
+        dest_buffer[2 * i]     = (uint16_t)(sample >> 16);     // High 16 bits (MSBs) first
+        dest_buffer[2 * i + 1] = (uint16_t)(sample & 0xFFFF);  // Low 16 bits (LSBs) second
       }
     } else {
       /* Underflow: fill with zeros to avoid static noise */

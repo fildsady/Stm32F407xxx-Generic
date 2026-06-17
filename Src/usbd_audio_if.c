@@ -6,7 +6,7 @@ volatile uint8_t usb_audio_streaming = 0;
 
 /* Circular audio buffer for user processing */
 #define AUDIO_BUFFER_SIZE 2048
-volatile int16_t usb_audio_buffer[AUDIO_BUFFER_SIZE];
+volatile int32_t usb_audio_buffer[AUDIO_BUFFER_SIZE];
 static volatile uint32_t usb_audio_write_ptr = 0;
 
 /* Private function prototypes */
@@ -79,8 +79,8 @@ static int8_t AUDIO_MuteCtl_FS(uint8_t cmd) {
 static int8_t AUDIO_PeriodicTC_FS(uint8_t *pbuf, uint32_t size, uint8_t cmd) {
   /* This is called every time a new packet of audio data is received */
   if (cmd == AUDIO_OUT_TC && pbuf != NULL && size > 0) {
-    uint32_t samples_received = size / 2; /* 16-bit samples */
-    int16_t *src = (int16_t *)pbuf;
+    uint32_t samples_received = size / 4; /* 24-bit samples in 32-bit subframes (4 bytes per sample) */
+    int32_t *src = (int32_t *)pbuf;
     
     for (uint32_t i = 0; i < samples_received; i++) {
       usb_audio_buffer[usb_audio_write_ptr] = src[i];
