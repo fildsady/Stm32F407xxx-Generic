@@ -128,9 +128,9 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev) {
   }
 
   /* Set RX and TX FIFOs */
-  HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_FS, 128);       /* Shared Rx FIFO (for all OUT EPs) */
+  HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_FS, 200);       /* Shared Rx FIFO (for all OUT EPs) - increased for 384-byte (96-word) audio packets */
   HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 0, 64);     /* EP0 IN TX FIFO */
-  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 1, 128);    /* EP1 IN TX FIFO (not used, but good to have) */
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 1, 56);     /* EP1 IN TX FIFO (reduced since EP1 IN is unused, total FIFO size is 320 words) */
 
   return USBD_OK;
 }
