@@ -77,7 +77,7 @@ uint8_t CS43L22_Init(uint32_t sample_rate) {
   codec_write_reg(0x02, 0x01); /* Power Control 1: Power Down */
   codec_write_reg(0x04, 0xAF); /* Power Control 2: Headphone always on, speaker off */
   codec_write_reg(0x05, 0x81); /* Clocking Control: Auto-detect clock speed */
-  codec_write_reg(0x06, 0x05); /* Interface Control: I2S Philips 24-bit format */
+  codec_write_reg(0x06, 0x04); /* Interface Control: I2S Philips 16-bit format */
   
   /* Select analog routing path */
   codec_write_reg(0x0A, 0x00); /* Analog routing: DAC to output */
