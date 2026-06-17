@@ -41,6 +41,38 @@ void OTG_FS_IRQHandler(void)
   HAL_PCD_IRQHandler(&hpcd_USB_OTG_FS);
 }
 
+/* Override weak HAL_GetTick and HAL_Delay to prevent hangs before/after FreeRTOS starts */
+uint32_t HAL_GetTick(void)
+{
+  if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+    return xTaskGetTickCount();
+  } else {
+    static uint32_t initialized = 0;
+    if (!initialized) {
+      CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+      DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+      initialized = 1;
+    }
+    return DWT->CYCCNT / 168000;
+  }
+}
+
+void HAL_Delay(uint32_t Delay)
+{
+  if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+    vTaskDelay(pdMS_TO_TICKS(Delay));
+  } else {
+    uint32_t tickstart = HAL_GetTick();
+    uint32_t wait = Delay;
+    if (wait < HAL_MAX_DELAY) {
+      wait += 1U;
+    }
+    while((HAL_GetTick() - tickstart) < wait) {
+      __asm__ volatile("nop");
+    }
+  }
+}
+
 void SystemClock_Config(void)
 {
   /* Enable HSE (High Speed External Clock) */
